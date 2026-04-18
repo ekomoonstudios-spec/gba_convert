@@ -82,42 +82,37 @@ def collect_source_files(
 
 
 def assemble(src: Path, obj: Path) -> None:
-    """
-    TODO implement:
-
-        arm-none-eabi-as -mcpu=arm7tdmi -mthumb-interwork \
-            -o <obj> <src>
-
-    Returns nothing on success, raises CalledProcessError on failure.
-    """
-    raise NotImplementedError(
-        "assemble() — fill in with arm-none-eabi-as invocation. "
-        "See PROCESS.md §11a step 1."
-    )
+    """arm-none-eabi-as -mcpu=arm7tdmi -mthumb-interwork -o <obj> <src>."""
+    cmd = [
+        "arm-none-eabi-as",
+        "-mcpu=arm7tdmi",
+        "-mthumb-interwork",
+        "-o", str(obj),
+        str(src),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 def link(objects: list[Path], elf_out: Path, linker_script: Path) -> None:
-    """
-    TODO implement:
-
-        arm-none-eabi-ld -T <linker_script> -o <elf_out> <objects...>
-    """
-    raise NotImplementedError(
-        "link() — fill in with arm-none-eabi-ld invocation. "
-        "See PROCESS.md §11a step 2."
-    )
+    """arm-none-eabi-ld -T <linker_script> -o <elf_out> <objects...>."""
+    cmd = [
+        "arm-none-eabi-ld",
+        "-T", str(linker_script),
+        "-o", str(elf_out),
+        *[str(o) for o in objects],
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 def objcopy_to_bin(elf: Path, bin_out: Path) -> None:
-    """
-    TODO implement:
-
-        arm-none-eabi-objcopy -O binary <elf> <bin_out>
-    """
-    raise NotImplementedError(
-        "objcopy_to_bin() — fill in with arm-none-eabi-objcopy. "
-        "See PROCESS.md §11a step 3."
-    )
+    """arm-none-eabi-objcopy -O binary <elf> <bin_out>."""
+    cmd = [
+        "arm-none-eabi-objcopy",
+        "-O", "binary",
+        str(elf),
+        str(bin_out),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
 def fix_header(rom: Path) -> None:

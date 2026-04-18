@@ -25,6 +25,7 @@ NotImplementedError with the exact commands/steps to fill in.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -158,52 +159,153 @@ def extract_text_bin(obj: Path, bin_out: Path) -> None:
     subprocess.run(cmd, check=True, capture_output=True, text=True)
 
 
-def original_byte_span(annotated: Path, func_name: str) -> tuple[int, int, bytes]:
+_DIRECTIVE_WIDTH = {
+    ".byte": 1, ".db": 1,
+    ".2byte": 2, ".hword": 2, ".short": 2, ".half": 2,
+    ".4byte": 4, ".word": 4, ".long": 4, ".int": 4,
+}
+_FUNC_START_MACROS = (
+    "thumb_func_start",
+    "arm_func_start",
+    "non_word_aligned_thumb_func_start",
+)
+_FUNC_END_MACROS = ("thumb_func_end", "arm_func_end")
+_SKIP_DIRECTIVES = {
+    ".pool", ".text", ".syntax", ".type", ".size", ".global", ".globl",
+    ".thumb", ".arm", ".thumb_func", ".end", ".equ", ".set", ".if",
+    ".endif", ".else", ".ltorg", ".extern", ".section", ".data",
+    ".macro", ".endm", ".include", ".purgem",
+}
+_ALIGN_DIRECTIVES = {".align", ".balign", ".p2align"}
+_ZERO_DIRECTIVES = {".space", ".skip", ".zero"}
+_STR_DIRECTIVES = {".ascii": False, ".asciz": True, ".string": True}
+
+
+def original_byte_span(annotated: Path, func_name: str) -> tuple[int, int, int]:
+    """Locate `func_name`'s byte span in the annotated .s.
+
+    Returns (start_line, end_line, total_bytes) where:
+      - start_line is the zero-based index of the `func_name:` label line.
+      - end_line is the first line AFTER the span (exclusive).
+      - total_bytes is how many bytes the body between them assembles to.
+
+    The span ends at the next `*_func_start` macro, a plausible next
+    function label (`sub_XXX:`, `_0xADDR:`), or EOF.
+
+    Only the *count* is authoritative here; the real bytes come from
+    the original ROM and don't need to be recovered — all callers use
+    the count for budget enforcement.
     """
-    TODO implement:
+    lines = annotated.read_text().splitlines()
+    label_pat = re.compile(rf"^\s*{re.escape(func_name)}\s*:\s*(@.*)?$")
 
-    Locate the `.byte` / `.hword` / `.word` span in the annotated .s
-    that corresponds to `func_name` (the label) and return:
-        (start_line, end_line, original_bytes)
+    start = None
+    mode = "thumb"
+    for i, line in enumerate(lines):
+        if label_pat.match(line):
+            start = i
+            for j in range(max(0, i - 4), i):
+                prev = lines[j].strip()
+                if prev.startswith("arm_func_start"):
+                    mode = "arm"
+                elif prev.startswith(_FUNC_START_MACROS):
+                    mode = "thumb"
+            break
+    if start is None:
+        raise ValueError(
+            f"label {func_name!r} not found in {annotated.name}"
+        )
 
-    Strategy:
-        - Find the label `func_name:` (or `thumb_func_start func_name`).
-        - Walk forward until the next function label or .pool/.align
-          boundary.
-        - Assemble the literal bytes that appear on those lines.
+    next_func = re.compile(r"^\s*(?:" + "|".join(_FUNC_START_MACROS) + r")\b")
+    next_label = re.compile(r"^\s*(?:_0?[xX]?[0-9A-Fa-f]+|sub_[0-9A-Fa-f]+)\s*:")
 
-    See PROCESS.md §11b step 4 for the exact stopping rules.
-    """
-    raise NotImplementedError(
-        "original_byte_span() — locate the func's byte span in the "
-        "annotated .s. See PROCESS.md §11b step 4."
-    )
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if next_func.match(lines[i]) or next_label.match(lines[i]):
+            end = i
+            break
+
+    total = _count_bytes(lines[start + 1 : end], mode)
+    return start, end, total
+
+
+def _count_bytes(body: list[str], mode: str) -> int:
+    width_inst = 4 if mode == "arm" else 2
+    total = 0
+    for raw in body:
+        line = raw.split("@", 1)[0].strip()
+        if not line or line.endswith(":"):
+            continue
+        first = line.split()[0]
+        if first in _FUNC_START_MACROS or first in _FUNC_END_MACROS:
+            continue
+        if first.startswith("."):
+            directive = first
+            operand = line[len(first):].strip()
+            w = _DIRECTIVE_WIDTH.get(directive)
+            if w is not None:
+                ops = [x for x in operand.split(",") if x.strip()]
+                total += len(ops) * w
+                continue
+            if directive in _STR_DIRECTIVES:
+                total += _count_string_bytes(operand, _STR_DIRECTIVES[directive])
+                continue
+            if directive in _ZERO_DIRECTIVES:
+                n = operand.split(",")[0].strip()
+                try:
+                    total += int(n, 0)
+                except ValueError:
+                    pass
+                continue
+            if directive in _ALIGN_DIRECTIVES or directive in _SKIP_DIRECTIVES:
+                continue
+            continue
+        total += width_inst
+    return total
+
+
+def _count_string_bytes(operand: str, null_terminate: bool) -> int:
+    total = 0
+    for m in re.finditer(r'"((?:[^"\\]|\\.)*)"', operand):
+        s = re.sub(r"\\.", "X", m.group(1))
+        total += len(s)
+        if null_terminate:
+            total += 1
+    return total
+
+
+_BYTES_PER_LINE = 16
 
 
 def splice(
     annotated_src: Path,
     spliced_dst: Path,
-    func_name: str,
+    start_line: int,
+    end_line: int,
     new_bytes: bytes,
 ) -> None:
+    """Rewrite `annotated_src` into `spliced_dst` with lines
+    (start_line, end_line) replaced by the bytes of `new_bytes`
+    emitted as `.byte` directives. The label line at `start_line`
+    is kept verbatim; everything at `end_line` onward is kept verbatim.
+
+    Caller must have ensured len(new_bytes) == original span bytes
+    (padded with THUMB nops if needed).
     """
-    TODO implement:
+    lines = annotated_src.read_text().splitlines(keepends=True)
+    prefix = "".join(lines[: start_line + 1])
+    suffix = "".join(lines[end_line:])
 
-    Replace the bytes belonging to `func_name` in `annotated_src` with
-    `new_bytes`, writing the result to `spliced_dst`. Everything
-    outside the function's span is copied verbatim.
+    body_parts = ["\t@ --- recompiled by recompile.py ---\n"]
+    for i in range(0, len(new_bytes), _BYTES_PER_LINE):
+        chunk = new_bytes[i : i + _BYTES_PER_LINE]
+        body_parts.append(
+            "\t.byte " + ", ".join(f"0x{b:02X}" for b in chunk) + "\n"
+        )
+    body_parts.append("\t@ --- end recompiled ---\n")
 
-    Length contract (enforced by caller, re-check here defensively):
-        len(new_bytes) <= len(original_bytes)
-    Pad the tail with THUMB_NOP (0xC046) to hit the original length
-    exactly — the surrounding code assumes fixed offsets.
-
-    See PROCESS.md §11b steps 4–5.
-    """
-    raise NotImplementedError(
-        "splice() — rewrite the annotated .s with new_bytes in place "
-        "of func_name's original byte span. See PROCESS.md §11b step 5."
-    )
+    spliced_dst.parent.mkdir(parents=True, exist_ok=True)
+    spliced_dst.write_text(prefix + "".join(body_parts) + suffix)
 
 
 def recompile_one(
@@ -225,8 +327,8 @@ def recompile_one(
     # module bundles several, we'll need the LLM to mark which one changed.
     func_name = _guess_func_name(mod.edited_path)
 
-    start, end, original = original_byte_span(mod.annotated_path, func_name)
-    n_new, n_orig = len(new_bytes), len(original)
+    start, end, n_orig = original_byte_span(mod.annotated_path, func_name)
+    n_new = len(new_bytes)
 
     if n_new > n_orig:
         click.secho(
@@ -238,7 +340,7 @@ def recompile_one(
         raise click.ClickException(f"{mod.name}: over-size")
 
     if n_new < n_orig:
-        pad = (n_orig - n_new)
+        pad = n_orig - n_new
         if pad % 2 != 0:
             raise click.ClickException(
                 f"{mod.name}: odd-byte padding ({pad}); THUMB is 2-byte"
@@ -253,7 +355,7 @@ def recompile_one(
         click.echo(f"  ✓ {mod.name}: compiled {n_new}B (exact fit).")
 
     dst = recompiled_dir / mod.annotated_path.name
-    splice(mod.annotated_path, dst, func_name, new_bytes)   # TODO
+    splice(mod.annotated_path, dst, start, end, new_bytes)
 
 
 def _guess_func_name(edited_c: Path) -> str:
