@@ -7,27 +7,51 @@ is most likely about. Return JSON only, no prose.
 
 > {instruction}
 
-## variables.md (index of named functions + globals across the ROM)
+## Glossary (canonical name registry — small, stable)
 
 ```markdown
-{variables_md}
+{glossary}
 ```
 
-## Available modules
+## modules.md (per-module category + one-line summary)
 
-Each filename encodes `mod_<INDEX>_<START_ADDRESS>.c`.
+This is the fastest index for routing — each row has `id`, `category`,
+and a short `summary`. Prefer this over scanning `variables.md` for
+wide queries like "change the audio engine".
+
+```markdown
+{modules_md}
+```
+
+## Available modules (filtered set you must pick from)
+
+Each filename encodes `mod_<INDEX>_<START_ADDRESS>.c`. This list may
+already be pre-filtered by:
+
+- `--category` / `--character` flags, OR
+- an FTS5 keyword search over the request text against per-module
+  dossiers (pulls the top ~20 matches by bm25 score).
+
+When the list has been pre-filtered, the first few entries are already
+the strongest keyword matches — still verify against the glossary and
+`modules.md` rather than picking blindly.
 
 {module_list}
 
 ## How to choose
 
-1. First, scan `variables.md` for function or global names that match the
-   user's description (by keyword or semantic intent).
-2. Each named entity has an address. Find the module whose range contains
-   that address (the filename's `<START_ADDRESS>` is the module's base).
-3. If multiple modules plausibly fit, list them most-likely-first.
-4. If nothing matches confidently, return an empty `candidates` list and
-   explain what you'd need to know.
+1. Decide which **category** the request belongs to (audio / video /
+   input / gameplay / ui / system / bios_wrapper / data) and look up
+   those ids in `modules.md`.
+2. Within that category, match the `summary` column and the glossary
+   for named functions/globals hitting the request's keywords or
+   semantic intent.
+3. Each named entity has an address — the filename's `<START_ADDRESS>`
+   is the module's base, so use that to match.
+4. If multiple modules plausibly fit, list them most-likely-first.
+5. If nothing in the **available modules** list matches confidently,
+   return an empty `candidates` list and explain what you'd need.
+   Do NOT pick a module that isn't in the available list.
 
 ## Output
 

@@ -13,10 +13,16 @@ within the surgical-splice constraints. Return JSON only.
 {source}
 ```
 
-## variables.md (naming context — use these names)
+## Glossary (canonical names — use these verbatim)
 
 ```markdown
-{variables_md}
+{glossary}
+```
+
+## Module dossier (this module's functions, globals, I/O writes, constants, category)
+
+```markdown
+{dossier_md}
 ```
 
 ## Hard constraints

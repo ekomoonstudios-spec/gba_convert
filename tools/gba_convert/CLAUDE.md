@@ -186,6 +186,36 @@ Guessed-but-uncertain names stay as `sub_<ADDR>` — do not write them to
 
 ---
 
+## Module categorization (fixed taxonomy)
+
+Every module gets one `category` label. Pick from this closed set — do
+not invent new categories. If evidence is split, pick the dominant
+behaviour and mention the secondary in `notes`.
+
+| Category       | Primary signals (concrete, address-based)                                                 |
+|----------------|-------------------------------------------------------------------------------------------|
+| `audio`        | `swi 0x1A`–`0x1F`; writes to `0x04000060`–`0x040000A8` (sound regs); MKS/M4A engine refs  |
+| `video`        | LCD regs `0x04000000`–`0x0400005E`; DMA writes to VRAM (`0x06xxxxxx`), palette, OAM       |
+| `input`        | Reads of `REG_KEYINPUT` (`0x04000130`) / `REG_KEYCNT` (`0x04000132`)                      |
+| `gameplay`     | Physics, AI, entity update loops, state machines — heavy EWRAM/IWRAM, little I/O          |
+| `ui`           | Menus, HUD, text/glyph rendering, cursor logic — mostly VRAM/OAM writes but driven by input |
+| `system`       | IRQ handlers (`REG_IE`/`REG_IF`/`REG_IME`), boot, memory setup, SRAM save (`0x0E000000`) |
+| `bios_wrapper` | Thin single-SWI wrappers — the function body is essentially one `swi` + return            |
+| `data`         | Coherent content: palette, tileset, text table, level data — already tagged `kind=data`   |
+| `unknown`      | Can't tell from this module alone                                                         |
+
+Rules for the category field:
+- Assign based on the **memory regions and I/O registers actually
+  touched** in the module, not on guesses about the game.
+- If `kind == "data"`, the category is `data`. No exceptions.
+- `ui` vs `gameplay` is the hardest call — if the module reads joypad
+  state and writes OAM/VRAM, it's probably `ui`; if it updates entity
+  positions in EWRAM without reading input, it's `gameplay`.
+- Include a `category_reason` string (one short sentence) explaining
+  the dominant signal.
+
+---
+
 ## When in doubt
 
 Prefer silence over speculation. An unannotated line is fine; a

@@ -37,6 +37,8 @@ class CTranslator:
     def __init__(self, output_dir: Path, *, model: str = MODEL) -> None:
         self.output_dir = output_dir
         self.annotated_dir = output_dir / "annotated"
+        self.per_module_dir = output_dir / "per_module"
+        self.ghidra_c_dir = output_dir / "ghidra_c"
         self.c_dir = output_dir / "c_view"
         self.c_dir.mkdir(parents=True, exist_ok=True)
         self.gba_h_path = self.c_dir / "gba.h"
@@ -88,7 +90,13 @@ class CTranslator:
 
     def translate_one(self, mod: dict, annotated_path: Path) -> CViewResult:
         source = annotated_path.read_text()
-        variables_md = self.variables_md_path.read_text()
+        glossary = self.variables_md_path.read_text() if self.variables_md_path.is_file() else ""
+
+        stem = Path(mod["path"]).stem
+        dossier_path = self.per_module_dir / f"{stem}.md"
+        dossier_md = dossier_path.read_text() if dossier_path.is_file() else "(no analysis dossier found)"
+
+        ghidra_c = _load_ghidra_c(self.ghidra_c_dir, mod["addr_start"], mod["addr_end"])
 
         user_prompt = self.template.format(
             module_path=mod["path"],
@@ -96,7 +104,9 @@ class CTranslator:
             addr_end=mod["addr_end"],
             kind=mod["kind"],
             line_count=len(source.splitlines()),
-            variables_md=variables_md,
+            glossary=glossary,
+            dossier_md=dossier_md,
+            ghidra_c=ghidra_c,
             module_source=source,
         )
 
@@ -167,6 +177,37 @@ class CTranslator:
 
     def _save_progress(self, progress: dict) -> None:
         self.progress_path.write_text(json.dumps(progress, indent=2) + "\n")
+
+
+_GHIDRA_ADDR_RE = re.compile(r"^([0-9a-fA-F]{8})\.c$")
+
+
+def _load_ghidra_c(ghidra_c_dir: Path, addr_start: str, addr_end: str) -> str:
+    """Concatenate every ghidra_c/<addr>.c whose address is in this module.
+
+    Files are named by the function's entry address in hex, e.g.
+    `080012c4.c`. Returns a single string with a header per function,
+    or a short placeholder if Ghidra output is missing.
+    """
+    if not ghidra_c_dir.is_dir():
+        return "(no ghidra_c/ directory — run ghidra.py first, or skip if decompiler isn't installed)"
+    try:
+        lo = int(addr_start, 16)
+        hi = int(addr_end, 16)
+    except ValueError:
+        return "(could not parse module address range)"
+
+    chunks: list[str] = []
+    for p in sorted(ghidra_c_dir.glob("*.c")):
+        m = _GHIDRA_ADDR_RE.match(p.name)
+        if not m:
+            continue
+        addr = int(m.group(1), 16)
+        if lo <= addr <= hi:
+            chunks.append(f"/* ---- 0x{addr:08X}  ({p.name}) ---- */\n{p.read_text()}")
+    if not chunks:
+        return "(no ghidra functions in this module's address range)"
+    return "\n\n".join(chunks)
 
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)

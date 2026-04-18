@@ -22,6 +22,7 @@ from disassemble import disassemble
 from split_modules import split_asm
 from analyze import Analyzer, MODEL
 from translate_to_c import CTranslator
+import ghidra as ghidra_mod
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUTPUT = HERE / "output"
@@ -38,12 +39,15 @@ DEFAULT_OUTPUT = HERE / "output"
               help="Max lines per module chunk.")
 @click.option("--model", default=MODEL, show_default=True,
               help="Anthropic model ID for the analyze step.")
-@click.option("--only", type=click.Choice(["disasm", "split", "analyze", "cview"]),
+@click.option("--only", type=click.Choice(["disasm", "split", "analyze", "ghidra", "cview"]),
               default=None, help="Run only one phase.")
 @click.option("--skip-analyze", is_flag=True,
               help="Run disasm + split, skip all LLM steps.")
+@click.option("--skip-ghidra", is_flag=True,
+              help="Skip the Ghidra decompile step. translate_to_c.py will "
+                   "fall back to translating the annotated asm directly.")
 @click.option("--skip-cview", is_flag=True,
-              help="Run disasm + split + analyze, skip the C-view step.")
+              help="Run disasm + split + analyze (+ ghidra), skip the C-view step.")
 @click.option("--force", is_flag=True,
               help="Re-run completed modules in LLM steps.")
 @click.option("--include-data", is_flag=True,
@@ -61,6 +65,7 @@ def main(
     model: str,
     only: str | None,
     skip_analyze: bool,
+    skip_ghidra: bool,
     skip_cview: bool,
     force: bool,
     include_data: bool,
@@ -130,6 +135,19 @@ def main(
         click.echo(f"  analysed {len(results)} new modules")
         click.echo(f"  variables: {analyzer.variables_md_path}")
         click.echo(f"  functions: {analyzer.functions_cfg_path}")
+
+    if only in (None, "ghidra"):
+        if skip_ghidra:
+            click.secho("== step 3.5: ghidra (skipped via --skip-ghidra) ==", fg="yellow")
+        else:
+            click.secho("== step 3.5: ghidra decompile ==", fg="cyan", bold=True)
+            result = ghidra_mod.decompile(rom, output)
+            if result.ok:
+                click.echo(f"  wrote {result.n_files} function(s) to {result.out_dir}")
+            else:
+                click.secho(f"  SKIPPED: {result.reason}", fg="yellow")
+        if only == "ghidra":
+            return
 
     if skip_cview or only == "analyze":
         return

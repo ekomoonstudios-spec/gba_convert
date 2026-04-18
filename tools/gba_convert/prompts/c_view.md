@@ -1,25 +1,48 @@
-# Module → C view request
+# Module → C view (polish pass)
 
-You are translating one ANNOTATED GBA assembly module into C. The C
-will be compiled by `arm-none-eabi-gcc` and is both a comprehension
-aid AND the edit surface for ROM modifications. Follow the rules
-below _in addition to_ the system prompt (`CLAUDE.md`).
+You are producing the readable C view for one GBA module. **Ghidra's
+decompiler has already done the hard lifting** — function boundaries,
+control flow, locals, types. Your job is to polish Ghidra's output into
+idiomatic GBA C using our conventions, and fall back to the annotated
+assembly only where Ghidra was wrong or missing.
+
+The resulting `.c` is compiled by `arm-none-eabi-gcc` and is the edit
+surface for ROM modifications. Follow the rules below *in addition to*
+the system prompt (`CLAUDE.md`).
 
 ## Module metadata
 
 - **Source file:** `{module_path}`
 - **Address range:** `{addr_start}` – `{addr_end}`
 - **Kind:** `{kind}`   (code | data | mixed)
-- **Lines in this module:** `{line_count}`
+- **Lines in annotated asm:** `{line_count}`
 
-## Current `variables.md`
-
-Use these names. Don't invent new ones for functions or globals that
-are already listed here.
+## Glossary — canonical names (use these verbatim)
 
 ```markdown
-{variables_md}
+{glossary}
 ```
+
+## Module dossier (this module's functions, globals, I/O writes, constants, category)
+
+This is the analyst's notes for THIS module only — richer per-module
+context than the glossary. Cross-check Ghidra against this: if the
+dossier names a function or global, rename Ghidra's `FUN_080012c4` /
+`DAT_03001234` to match.
+
+```markdown
+{dossier_md}
+```
+
+## Ghidra decompiler output (primary input)
+
+```c
+{ghidra_c}
+```
+
+If this reads "(no ghidra functions in this module's address range)"
+or "(no ghidra_c/ directory — …)", Ghidra isn't available for this
+run — fall back to translating the annotated assembly directly.
 
 ## Shared `gba.h` (already exists; `#include` it)
 
@@ -33,7 +56,7 @@ Provides:
 
 Do not redeclare any of these. Just `#include "gba.h"`.
 
-## Annotated assembly
+## Annotated assembly (fallback / cross-check)
 
 ```arm
 {module_source}
@@ -41,71 +64,57 @@ Do not redeclare any of these. Just `#include "gba.h"`.
 
 ---
 
-## Translation rules
+## Polish rules
 
-1. **Compilability.** The C must build with:
-
-   ```sh
-   arm-none-eabi-gcc -mthumb -mcpu=arm7tdmi -Os \
-       -nostdlib -ffreestanding -Wall -c mod_XXXX.c
-   ```
-
-   No libc calls. No heap. No floating point unless the annotated ASM
-   was using soft-float helpers (then keep calling them as `extern`).
-
-2. **Types carry LDR/STR widths.** `ldrb` → `uint8_t`, `ldrh` →
-   `uint16_t`, `ldr` → `uint32_t`. Don't use `int` for everything;
-   the width is semantically important.
-
-3. **Use names from `variables.md`.** Function and global names must
-   match exactly. If `variables.md` calls something
-   `update_player_input`, use that.
-
-4. **Named I/O registers.** `*(volatile u16*)0x04000130` →
-   `REG_KEYINPUT`. Use the `REG_*` macros from `gba.h`.
-
-5. **BIOS calls use the wrapper.** `swi 0x06` → `bios_div(...)`.
-   Don't emit inline `__asm__("swi 0x06")` unless the calling
-   convention differs from the wrapper.
-
-6. **Backrefs on every non-trivial block.** Every translated function
-   body gets `// asm: mod_XXXX.s lines Y–Z` at the top, and any
-   non-obvious local block gets its own `// asm:` comment. This is
-   how a reviewer cross-checks the translation.
-
-7. **Hardware-specific semantics → inline asm.** If the original
-   depends on specific CPSR flag state, LDM/STM ordering for timing,
-   or other behaviour C can't express, emit a GCC extended-asm block
-   rather than fabricate wrong C:
+1. **Keep Ghidra's control flow.** If Ghidra lifted a loop into a
+   `while` or a switch, keep that shape. Don't rewrite structure
+   unless it's demonstrably wrong.
+2. **Rename per the dossier + glossary.** Replace every
+   `FUN_080012c4`, `DAT_03001234`, `iVar1`, `local_8` with the
+   canonical name if one exists. Unknown-but-reasonable names stay as
+   `sub_080012c4` / `local_var`.
+3. **Swap raw addresses for `REG_*` macros.** `*(short *)0x04000130`
+   → `REG_KEYINPUT`. Use the macros in `gba.h`.
+4. **SWI calls use wrappers.** Ghidra often emits `swi(6)` or
+   `__svc(6)` — turn those into `bios_div(...)`, `bios_vblank_wait()`,
+   etc. Match the SWI number to the table in `CLAUDE.md`.
+5. **Types carry widths.** Ghidra usually gets this right (`short` vs
+   `int` vs `byte`). Normalize to `u8` / `u16` / `u32` / `s8` / `s16`
+   / `s32` from `gba.h`. Don't use bare `int`.
+6. **Backrefs.** Every translated function body gets
+   `// asm: mod_XXXX.s lines Y–Z` at the top. This is how a reviewer
+   cross-checks against the original.
+7. **Hardware-specific semantics → inline asm.** If Ghidra emitted a
+   pattern that depends on specific CPSR flags, LDM/STM ordering for
+   timing, or behaviour C can't express, use a GCC extended-asm block
+   instead of fabricating C:
 
    ```c
    __asm__ volatile (
-       "mov r0, %0\n\t"
        "..."
-       : "=r"(result)
-       : "r"(input)
-       : "r0", "cc"
+       : "=r"(out) : "r"(in) : "cc", "r0"
    );
    ```
-
 8. **Function signatures match the ABI.** AAPCS: args in `r0`–`r3`,
-   return in `r0`. If a function uses `r4`–`r11` they're local
-   variables (callee-saved). Don't over-declare arguments.
+   return in `r0`. Ghidra usually infers this correctly; verify
+   against the dossier's `args:` / `returns:` entries.
+9. **Data modules.** If `kind` is `data` and Ghidra has nothing
+   useful, emit typed globals where you can infer shape
+   (`const u16 palette_start[256]`) or `extern const u8 raw[N];` for
+   opaque blobs. Don't turn 1500 `.byte` lines into C initializers.
+10. **Don't fabricate.** If the annotated asm has `@ purpose unclear`
+    and Ghidra's output is also ambiguous, keep the region as a
+    `// TODO:` with inline asm — don't invent plausible-looking C.
+11. **Compilability.** The C must build with:
 
-9. **Data modules.** If `kind` is `data`, emit a C file that declares
-   the data as typed globals where you can infer the shape (e.g.
-   `const u16 palette_start[256]`). If the shape is opaque, emit
-   `extern const u8 mod_XXXX_raw[N];` and `#include` the raw bytes
-   verbatim via `.incbin` equivalents — don't try to turn 1500 lines
-   of `.byte` into C initialisers.
+    ```sh
+    arm-none-eabi-gcc -mthumb -mcpu=arm7tdmi -Os \
+        -nostdlib -ffreestanding -Wall -c mod_XXXX.c
+    ```
 
-10. **Don't fabricate.** If a region is `@ purpose unclear`, keep it
-    as a `// TODO:` comment with an inline asm block, don't invent a
-    plausible-looking C function that "does something like this."
-
-11. **No `main()`.** This module is linked into a full ROM; there's
-    no process entry point beyond the real entry point the analysis
-    step already identified.
+    No libc. No heap. No floats unless the original used soft-float
+    helpers (then keep `extern` declarations).
+12. **No `main()`.** This is linked into a full ROM.
 
 ## Output format
 
@@ -113,7 +122,7 @@ Respond with a **single JSON object**, no prose, no markdown fences:
 
 ```json
 {{
-  "c_source": "string — the ENTIRE .c file contents, starting with the /* @source: ... */ header block and `#include \"gba.h\"`",
+  "c_source": "string — the ENTIRE .c file contents, starting with a /* @source: mod_XXXX.s */ header and `#include \"gba.h\"`",
   "gba_h_additions": [
     {{
       "name": "REG_SOMETHING",
@@ -122,11 +131,10 @@ Respond with a **single JSON object**, no prose, no markdown fences:
       "reason": "why it's needed — short"
     }}
   ],
-  "notes": "one short paragraph of anything noteworthy: ambiguity in the ASM, assumptions made, data shapes guessed at. Empty string if nothing."
+  "notes": "one short paragraph: what Ghidra got right/wrong, renames applied, ambiguity remaining. Empty string if nothing."
 }}
 ```
 
 `c_source` is written verbatim to `output/c_view/<same-basename>.c`.
 `gba_h_additions` entries are appended to `output/c_view/gba.h` only
-if that exact `name` isn't already present. Use this field _sparingly_
-— if a REG is already in `gba.h`, don't re-add it.
+if that `name` isn't already present. Use sparingly.
