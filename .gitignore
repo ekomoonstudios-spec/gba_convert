@@ -9,5 +9,5 @@ tools/gba_convert/output/
 tools/gba_convert/output.*/
 tools/gba_convert/**/__pycache__/
 tools/gba_convert/.venv/
-*.gba
-*.GBA
+# *.gba
+# *.GBA
