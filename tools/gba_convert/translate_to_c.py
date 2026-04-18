@@ -56,12 +56,16 @@ class CTranslator:
         modules: list[dict],
         *,
         force: bool = False,
+        skip_data: bool = True,
     ) -> list[CViewResult]:
         progress = self._load_progress()
         results: list[CViewResult] = []
 
         for mod in modules:
             idx = mod["index"]
+            if skip_data and mod.get("kind") == "data":
+                progress.setdefault("skipped_data", []).append(idx)
+                continue
             if not force and idx in progress["completed"]:
                 continue
             annotated = self.annotated_dir / mod["path"]

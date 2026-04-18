@@ -46,6 +46,10 @@ DEFAULT_OUTPUT = HERE / "output"
               help="Run disasm + split + analyze, skip the C-view step.")
 @click.option("--force", is_flag=True,
               help="Re-run completed modules in LLM steps.")
+@click.option("--include-data", is_flag=True,
+              help="Run LLM steps on pure-data modules too. "
+                   "By default kind=data modules are skipped — they're "
+                   "just `.byte` dumps and waste calls.")
 def main(
     rom: Path,
     output: Path,
@@ -56,6 +60,7 @@ def main(
     skip_analyze: bool,
     skip_cview: bool,
     force: bool,
+    include_data: bool,
 ) -> None:
     """Disassemble ROM, split, annotate with Claude, translate to C."""
     output.mkdir(parents=True, exist_ok=True)
@@ -107,8 +112,13 @@ def main(
             )
             sys.exit(2)
         modules = json.loads(modules_path.read_text())
+        n_data = sum(1 for m in modules if m.get("kind") == "data")
+        if not include_data and n_data:
+            click.echo(f"  skipping {n_data} data-only modules "
+                       f"(pass --include-data to override)")
         analyzer = Analyzer(output, model=model)
-        results = analyzer.analyze_all(modules, force=force)
+        results = analyzer.analyze_all(modules, force=force,
+                                       skip_data=not include_data)
         click.echo(f"  analysed {len(results)} new modules")
         click.echo(f"  variables: {analyzer.variables_md_path}")
         click.echo(f"  functions: {analyzer.functions_cfg_path}")
@@ -137,8 +147,13 @@ def main(
             )
             sys.exit(2)
         modules = json.loads(modules_path.read_text())
+        n_data = sum(1 for m in modules if m.get("kind") == "data")
+        if not include_data and n_data:
+            click.echo(f"  skipping {n_data} data-only modules "
+                       f"(pass --include-data to override)")
         translator = CTranslator(output, model=model)
-        results = translator.translate_all(modules, force=force)
+        results = translator.translate_all(modules, force=force,
+                                           skip_data=not include_data)
         click.echo(f"  translated {len(results)} new modules")
         click.echo(f"  c_view:    {translator.c_dir}")
         click.echo(f"  gba.h:     {translator.gba_h_path}")
