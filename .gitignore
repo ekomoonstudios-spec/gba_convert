@@ -11,3 +11,5 @@ tools/gba_convert/**/__pycache__/
 tools/gba_convert/.venv/
 # *.gba
 # *.GBA
+
+.env

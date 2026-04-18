@@ -50,6 +50,9 @@ DEFAULT_OUTPUT = HERE / "output"
               help="Run LLM steps on pure-data modules too. "
                    "By default kind=data modules are skipped — they're "
                    "just `.byte` dumps and waste calls.")
+@click.option("--limit", type=int, default=None,
+              help="Process at most N modules in each LLM step. "
+                   "Useful for smoke-testing the pipeline cheaply.")
 def main(
     rom: Path,
     output: Path,
@@ -61,6 +64,7 @@ def main(
     skip_cview: bool,
     force: bool,
     include_data: bool,
+    limit: int | None,
 ) -> None:
     """Disassemble ROM, split, annotate with Claude, translate to C."""
     output.mkdir(parents=True, exist_ok=True)
@@ -116,8 +120,12 @@ def main(
         if not include_data and n_data:
             click.echo(f"  skipping {n_data} data-only modules "
                        f"(pass --include-data to override)")
+        candidates = modules if include_data else [m for m in modules if m.get("kind") != "data"]
+        if limit is not None:
+            candidates = candidates[:limit]
+            click.echo(f"  --limit {limit} → processing first {len(candidates)} of {len(modules)} modules")
         analyzer = Analyzer(output, model=model)
-        results = analyzer.analyze_all(modules, force=force,
+        results = analyzer.analyze_all(candidates, force=force,
                                        skip_data=not include_data)
         click.echo(f"  analysed {len(results)} new modules")
         click.echo(f"  variables: {analyzer.variables_md_path}")
@@ -151,8 +159,12 @@ def main(
         if not include_data and n_data:
             click.echo(f"  skipping {n_data} data-only modules "
                        f"(pass --include-data to override)")
+        candidates = modules if include_data else [m for m in modules if m.get("kind") != "data"]
+        if limit is not None:
+            candidates = candidates[:limit]
+            click.echo(f"  --limit {limit} → processing first {len(candidates)} of {len(modules)} modules")
         translator = CTranslator(output, model=model)
-        results = translator.translate_all(modules, force=force,
+        results = translator.translate_all(candidates, force=force,
                                            skip_data=not include_data)
         click.echo(f"  translated {len(results)} new modules")
         click.echo(f"  c_view:    {translator.c_dir}")
