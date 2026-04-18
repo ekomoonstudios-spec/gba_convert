@@ -1,0 +1,4 @@
+anthropic>=0.40.0
+click>=8.0
+tqdm>=4.0
+click-default-group>=1.2

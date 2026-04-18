@@ -3,3 +3,11 @@ _site
 .jekyll-metadata
 
 config.codekit
+
+# gba_convert pipeline
+tools/gba_convert/output/
+tools/gba_convert/output.*/
+tools/gba_convert/**/__pycache__/
+tools/gba_convert/.venv/
+*.gba
+*.GBA
