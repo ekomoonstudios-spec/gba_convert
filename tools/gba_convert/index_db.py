@@ -94,6 +94,16 @@ CREATE TABLE IF NOT EXISTS characters (
 );
 CREATE INDEX IF NOT EXISTS idx_characters_name ON characters(name);
 
+CREATE TABLE IF NOT EXISTS xrefs (
+    target_addr TEXT NOT NULL,
+    module_id INTEGER NOT NULL,
+    line INTEGER,
+    kind TEXT,
+    raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_xrefs_target ON xrefs(target_addr);
+CREATE INDEX IF NOT EXISTS idx_xrefs_module ON xrefs(module_id);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS modules_fts USING fts5(
     path, category, summary, dossier_body,
     content='', tokenize='porter unicode61'
@@ -228,6 +238,27 @@ def rebuild(output_dir: Path) -> int:
                     e.get("confidence"),
                 ),
             )
+
+    xrefs_path = output_dir / "xrefs.json"
+    if xrefs_path.is_file():
+        try:
+            xref_map = json.loads(xrefs_path.read_text())
+        except json.JSONDecodeError:
+            xref_map = {}
+        for target, refs in xref_map.items():
+            for r in refs:
+                conn.execute(
+                    "INSERT INTO xrefs "
+                    "(target_addr, module_id, line, kind, raw) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        target,
+                        int(r["module_index"]),
+                        r.get("line"),
+                        r.get("kind"),
+                        r.get("raw"),
+                    ),
+                )
 
     conn.commit()
     count = conn.execute("SELECT COUNT(*) FROM modules").fetchone()[0]

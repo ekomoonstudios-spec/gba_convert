@@ -6,6 +6,7 @@ Shells out to `python -m luvdis` using the local Luvdis checkout at
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -90,6 +91,14 @@ def disassemble(
     info = _run_luvdis(["info", str(rom_path)], capture=True)
     info_text = (info.stdout or "") + (info.stderr or "")
     info_path.write_text(f"sha1: {rom_hash}\n\n{info_text}")
+
+    # Downstream steps (data_edit palette extraction, recompile splice)
+    # read bytes straight from the ROM, so stash the path where it can
+    # be recovered without re-plumbing it through every CLI.
+    (output_dir / "rom.meta.json").write_text(json.dumps({
+        "rom_path": str(rom_path),
+        "rom_hash": rom_hash,
+    }, indent=2) + "\n")
 
     args = [
         "disasm",

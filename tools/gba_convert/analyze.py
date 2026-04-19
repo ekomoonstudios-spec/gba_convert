@@ -26,7 +26,9 @@ from pathlib import Path
 
 from anthropic import Anthropic
 
+import data_edit
 import index_db
+import xrefs as xrefs_mod
 
 HERE = Path(__file__).resolve().parent
 SYSTEM_PROMPT_PATH = HERE / "CLAUDE.md"
@@ -114,10 +116,25 @@ class Analyzer:
         self._rewrite_categories_json(modules)
         self._rewrite_characters_md()
         try:
+            n = xrefs_mod.rebuild(self.output_dir)
+            print(f"  xrefs: {n} distinct targets → {self.output_dir / 'xrefs.json'}")
+        except Exception as exc:  # noqa: BLE001 — xrefs are optional
+            print(f"  xrefs: skipped ({type(exc).__name__}: {exc})")
+        try:
             n = index_db.rebuild(self.output_dir)
             print(f"  index_db: {n} modules → {self.output_dir / 'index.sqlite'}")
         except Exception as exc:  # noqa: BLE001 — index is optional
             print(f"  index_db: skipped ({type(exc).__name__}: {exc})")
+        try:
+            rom_meta_path = self.output_dir / "rom.meta.json"
+            if rom_meta_path.is_file():
+                rom_path = Path(json.loads(rom_meta_path.read_text())["rom_path"])
+                slices = data_edit.process_rom(self.output_dir, rom_path)
+                print(f"  data_edit: {len(slices)} palette slices → {self.output_dir / 'data_view'}")
+            else:
+                print("  data_edit: skipped (rom.meta.json missing — re-run disassemble.py)")
+        except Exception as exc:  # noqa: BLE001 — palette pass is optional
+            print(f"  data_edit: skipped ({type(exc).__name__}: {exc})")
         return results
 
     def analyze_one(self, mod: dict) -> AnalysisResult:
