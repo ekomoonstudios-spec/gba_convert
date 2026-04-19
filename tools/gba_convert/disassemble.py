@@ -37,10 +37,13 @@ def _sha1(path: Path) -> str:
 def _luvdis_env() -> dict:
     """Ensure local Luvdis is importable even without `pip install -e`."""
     env = os.environ.copy()
+    # Try using the installed package first, fall back to local directory
     existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        f"{LUVDIS_DIR}{os.pathsep}{existing}" if existing else str(LUVDIS_DIR)
-    )
+    # Add local luvdis dir at the end so installed package takes precedence
+    if existing:
+        env["PYTHONPATH"] = f"{existing}{os.pathsep}{LUVDIS_DIR}"
+    else:
+        env["PYTHONPATH"] = str(LUVDIS_DIR)
     return env
 
 

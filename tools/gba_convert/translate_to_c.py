@@ -15,14 +15,25 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from anthropic import Anthropic
+import os
+
+# Prefer a Gemini adapter when the GEMINI_API_KEY is present so users
+# can supply Gemini credentials instead of Anthropic. Fall back to the
+# installed Anthropic SDK if the adapter or key are not present.
+if os.environ.get("GEMINI_API_KEY"):
+    try:
+        from gemini_adapter import GeminiClient as Anthropic
+    except Exception:
+        from anthropic import Anthropic
+else:
+    from anthropic import Anthropic
 
 HERE = Path(__file__).resolve().parent
 SYSTEM_PROMPT_PATH = HERE / "CLAUDE.md"
 PROMPT_TEMPLATE_PATH = HERE / "prompts" / "c_view.md"
 
 MODEL = "claude-opus-4-7"
-MAX_TOKENS = 16_000
+MAX_TOKENS = 65_536
 
 
 @dataclass
@@ -86,7 +97,7 @@ class CTranslator:
 
         return results
 
-    def translate_one(self, mod: dict, annotated_path: Path) -> CViewResult:
+    def translate_one(self, mod: dict, annotated_path: Path, ghidra_hint: str = "") -> CViewResult:
         source = annotated_path.read_text()
         variables_md = self.variables_md_path.read_text()
 
@@ -99,6 +110,18 @@ class CTranslator:
             variables_md=variables_md,
             module_source=source,
         )
+
+        if ghidra_hint and ghidra_hint.strip():
+            user_prompt += (
+                "\n\n## Ghidra decompiler output (use as a starting point — correct it where needed)\n\n"
+                "```c\n"
+                + ghidra_hint.strip()
+                + "\n```\n"
+                "\nUse the Ghidra output above as structural guidance. "
+                "Fix types, variable names, register macros, and BIOS calls "
+                "as per the rules above. Do not copy Ghidra variable names "
+                "verbatim if they conflict with variables.md.\n"
+            )
 
         message = self.client.messages.create(
             model=self.model,
@@ -172,18 +195,113 @@ class CTranslator:
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _fix_json_strings(raw: str) -> str:
+    """Attempt to repair unescaped control chars inside JSON string values.
+
+    LLMs often return JSON where the string values contain literal
+    newlines, tabs, or unescaped backslashes.  This helper walks the
+    raw text and escapes them so ``json.loads`` can succeed.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if not in_string:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+            i += 1
+        else:
+            if ch == '\\' and i + 1 < len(raw):
+                # already-escaped sequence — keep both chars
+                out.append(ch)
+                out.append(raw[i + 1])
+                i += 2
+            elif ch == '"':
+                in_string = False
+                out.append(ch)
+                i += 1
+            elif ch == '\n':
+                out.append('\\n')
+                i += 1
+            elif ch == '\r':
+                out.append('\\r')
+                i += 1
+            elif ch == '\t':
+                out.append('\\t')
+                i += 1
+            else:
+                out.append(ch)
+                i += 1
+    return "".join(out)
+
+
 def _extract_json(raw: str) -> dict:
     raw = raw.strip()
+    # strip markdown code fences
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
+        raw = re.sub(r"\n?```\s*$", "", raw)
+
+    # 1) Try direct parse
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        m = _JSON_OBJ.search(raw)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+        pass
+
+    # 2) Extract outermost { … } and try
+    m = _JSON_OBJ.search(raw)
+    if m:
+        fragment = m.group(0)
+        try:
+            return json.loads(fragment)
+        except json.JSONDecodeError:
+            pass
+        # 3) Repair unescaped control characters and retry
+        try:
+            return json.loads(_fix_json_strings(fragment))
+        except json.JSONDecodeError:
+            pass
+
+    # 4) Try to salvage a truncated JSON response (max_tokens hit).
+    #    Look for "c_source": "..." and extract what we can.
+    salvage = re.search(r'"c_source"\s*:\s*"', raw)
+    if salvage:
+        start = salvage.end()
+        # walk the string collecting chars, handling escapes
+        chars: list[str] = []
+        i = start
+        while i < len(raw):
+            ch = raw[i]
+            if ch == '\\' and i + 1 < len(raw):
+                esc = raw[i + 1]
+                if esc == 'n': chars.append('\n')
+                elif esc == 't': chars.append('\t')
+                elif esc == 'r': chars.append('\r')
+                elif esc == '"': chars.append('"')
+                elif esc == '\\': chars.append('\\')
+                else: chars.append(ch + esc)
+                i += 2
+            elif ch == '"':
+                break  # proper end of string
+            else:
+                chars.append(ch)
+                i += 1
+        c_source = ''.join(chars)
+        if c_source.strip():
+            return {
+                "c_source": c_source,
+                "gba_h_additions": [],
+                "notes": "(salvaged from truncated JSON)",
+            }
+
+    # 5) Last resort: treat the entire response as raw C source.
+    return {
+        "c_source": raw,
+        "gba_h_additions": [],
+        "notes": "(raw LLM output — JSON extraction failed; treated as plain C)",
+    }
 
 
 _GBA_H_SEED = """/* gba.h — shared definitions for the C view.
