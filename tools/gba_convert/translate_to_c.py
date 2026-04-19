@@ -126,7 +126,16 @@ class CTranslator:
         raw = "".join(
             block.text for block in message.content if block.type == "text"
         )
-        parsed = _extract_json(raw)
+        try:
+            parsed = _extract_json(raw)
+        except json.JSONDecodeError:
+            debug_path = self.output_dir / f".cview_debug_{Path(mod['path']).stem}.txt"
+            debug_path.write_text(
+                f"stop_reason: {message.stop_reason}\n"
+                f"usage: {message.usage}\n"
+                f"raw_len: {len(raw)}\n--- raw ---\n{raw}"
+            )
+            raise
 
         c_source = parsed.get("c_source", "")
         if not c_source.strip():
@@ -211,6 +220,16 @@ def _load_ghidra_c(ghidra_c_dir: Path, addr_start: str, addr_end: str) -> str:
 
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
+_BAD_BACKSLASH = re.compile(r'\\(?!["\\/bfnrtu])')
+
+
+def _escape_stray_backslashes(s: str) -> str:
+    """Double any `\\` not followed by a valid JSON escape char.
+
+    Sonnet occasionally emits raw backslashes inside JSON string
+    values (e.g. around embedded C code), which break strict JSON.
+    """
+    return _BAD_BACKSLASH.sub(r"\\\\", s)
 
 
 def _extract_json(raw: str) -> dict:
@@ -218,13 +237,17 @@ def _extract_json(raw: str) -> dict:
     if raw.startswith("```"):
         raw = re.sub(r"^```[a-zA-Z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        m = _JSON_OBJ.search(raw)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+    for candidate in (raw, _escape_stray_backslashes(raw)):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            m = _JSON_OBJ.search(candidate)
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    continue
+    raise json.JSONDecodeError("cview response is not valid JSON", raw, 0)
 
 
 _GBA_H_SEED = """/* gba.h — shared definitions for the C view.

@@ -1,10 +1,8 @@
 """Step 4b: compile edited C modules and splice the fresh bytes back into
 the Luvdis disassembly.
 
-See PROCESS.md §11b for the full design.
-
 Pipeline (per edited module):
-    1. Detect edits:  diff `output/edited/mod_XXXX.c` against
+    1. Detect edits: diff `output/edited/mod_XXXX.c` against
        `output/c_view/mod_XXXX.c`. No edits → nothing to do.
     2. `arm-none-eabi-gcc -mthumb -mcpu=arm7tdmi -Os -nostdlib
         -ffreestanding -c -o <obj> <edited.c>`
@@ -13,15 +11,15 @@ Pipeline (per edited module):
          - N' == N : splice verbatim.
          - N' <  N : splice + pad tail with `nop` (0x46C0) to N.
          - N' >  N : FAIL LOUDLY. Caller must either shrink the edit or
-                     relocate the function (out of scope for the stub).
+                     relocate the function (out of scope for v1).
     5. Rewrite the corresponding `annotated/mod_XXXX.s` into
        `recompiled/mod_XXXX.s` with the edited function's `.byte` span
        replaced by the freshly compiled bytes. Everything outside the
        edited function stays byte-identical.
 
-STATUS: STUB. Toolchain detection + edit detection + CLI are wired;
-gcc invocation, section extraction, and splice logic raise
-NotImplementedError with the exact commands/steps to fill in.
+`rebuild.py` picks up the output of step 5 via its `recompiled/ >
+annotated/ > modules/` priority tier, so running this module then
+`rebuild.py` turns the edit into a playable `rebuilt.gba`.
 """
 from __future__ import annotations
 
@@ -317,8 +315,8 @@ def recompile_one(
     """Compile mod.edited_path, size-check, splice into recompiled_dir."""
     obj = build_dir / (mod.edited_path.stem + ".o")
     bin_ = build_dir / (mod.edited_path.stem + ".bin")
-    compile_module(mod.edited_path, obj, gba_h_dir)      # TODO
-    extract_text_bin(obj, bin_)                           # TODO
+    compile_module(mod.edited_path, obj, gba_h_dir)
+    extract_text_bin(obj, bin_)
 
     new_bytes = bin_.read_bytes()
 
@@ -359,15 +357,11 @@ def recompile_one(
 
 
 def _guess_func_name(edited_c: Path) -> str:
-    """Placeholder: strip `mod_NNNN_ADDR.c` → `sub_ADDR`.
-
-    The real implementation will parse the `/* @source: ... */` header
-    the translator writes and/or the label on the original annotated .s.
-    """
-    stem = edited_c.stem                     # mod_0017_080A1B30
+    """Strip `mod_NNNN_ADDR.c` → `sub_ADDR` (uppercase, matches Luvdis)."""
+    stem = edited_c.stem
     parts = stem.split("_")
     if len(parts) >= 3 and all(c in "0123456789abcdefABCDEF" for c in parts[-1]):
-        return f"sub_{parts[-1].lower()}"
+        return f"sub_{parts[-1].upper()}"
     return stem
 
 
@@ -378,12 +372,7 @@ def _guess_func_name(edited_c: Path) -> str:
 @click.option("--only", "only_name", type=str, default=None,
               help="Recompile just one module (e.g. mod_0017_080A1B30.c).")
 def main(output: Path, only_name: str | None) -> None:
-    """Compile edited C modules and splice the bytes into recompiled/.
-
-    STUB: toolchain + edit detection work today; gcc/objcopy/splice
-    calls raise NotImplementedError — fill them in to complete
-    Milestone 4 (see PROCESS.md §9).
-    """
+    """Compile edited C modules and splice the bytes into recompiled/."""
     output = output.resolve()
     c_view = output / "c_view"
     edited = output / "edited"

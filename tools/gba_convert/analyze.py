@@ -35,7 +35,7 @@ SYSTEM_PROMPT_PATH = HERE / "CLAUDE.md"
 PROMPT_TEMPLATE_PATH = HERE / "prompts" / "module_analysis.md"
 
 MODEL = "claude-opus-4-7"
-MAX_TOKENS = 16_000
+MAX_TOKENS = 32_000
 
 
 CATEGORIES = {
@@ -152,7 +152,7 @@ class Analyzer:
             module_source=source,
         )
 
-        message = self.client.messages.create(
+        with self.client.messages.stream(
             model=self.model,
             max_tokens=MAX_TOKENS,
             system=[
@@ -163,15 +163,28 @@ class Analyzer:
                 }
             ],
             messages=[{"role": "user", "content": user_prompt}],
-        )
+        ) as stream:
+            message = stream.get_final_message()
 
         raw = "".join(
             block.text for block in message.content if block.type == "text"
         )
-        parsed = _extract_json(raw)
+        try:
+            parsed = _extract_json(raw)
+        except json.JSONDecodeError:
+            debug_path = self.output_dir / f".analyze_debug_{Path(mod['path']).stem}.txt"
+            debug_path.write_text(
+                f"stop_reason: {message.stop_reason}\n"
+                f"usage: {message.usage}\n"
+                f"raw_len: {len(raw)}\n"
+                f"--- raw ---\n{raw}"
+            )
+            raise
 
         annotated_path = self.annotated_dir / mod["path"]
-        annotated_path.write_text(parsed.get("annotated_source", source))
+        annotated_path.write_text(
+            _splice_comments(source, parsed.get("comments", []) or [])
+        )
 
         functions = parsed.get("functions", []) or []
         globals_ = parsed.get("globals", []) or []
@@ -531,6 +544,48 @@ def _short_summary(functions: list[dict], notes: str) -> str:
             return name
     first_line = (notes or "").strip().splitlines()[:1]
     return first_line[0] if first_line else ""
+
+
+def _splice_comments(source: str, comments: list[dict]) -> str:
+    """Apply model-emitted `comments` to `source` and return annotated text.
+
+    Each comment has `line` (1-indexed), `kind` ("inline" | "block"), `text`.
+    - inline: append `\\t@ <text>` to that source line.
+    - block:  insert a new line `@ <text>` immediately before that source line.
+
+    Out-of-range lines and unknown kinds are dropped (the model can
+    sometimes hallucinate a line number past EOF).
+    """
+    lines = source.splitlines()
+    n = len(lines)
+    inline_by_line: dict[int, list[str]] = {}
+    blocks_by_line: dict[int, list[str]] = {}
+    for c in comments:
+        try:
+            line_no = int(c.get("line", 0))
+        except (TypeError, ValueError):
+            continue
+        if line_no < 1 or line_no > n:
+            continue
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        kind = (c.get("kind") or "inline").strip().lower()
+        if kind == "inline":
+            inline_by_line.setdefault(line_no, []).append(text)
+        elif kind == "block":
+            blocks_by_line.setdefault(line_no, []).append(text)
+
+    out: list[str] = []
+    for i, line in enumerate(lines, start=1):
+        for block in blocks_by_line.get(i, []):
+            out.append(f"@ {block}")
+        if i in inline_by_line:
+            suffix = "  ".join(inline_by_line[i])
+            out.append(f"{line}\t@ {suffix}")
+        else:
+            out.append(line)
+    return "\n".join(out) + ("\n" if source.endswith("\n") else "")
 
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)

@@ -22,6 +22,9 @@ truth — if it names `sub_080024C0` as `AgbMain`, call it `AgbMain` here.
 
 ## Module source
 
+Lines are **1-indexed** — the first line below is line 1, and the `line`
+field in your `comments` array must reference these numbers.
+
 ```arm
 {module_source}
 ```
@@ -35,7 +38,18 @@ markdown fences. Schema:
 
 ```json
 {{
-  "annotated_source": "string — the ENTIRE module file with @ comments added. Must still assemble. Preserve every original instruction, label, and directive exactly.",
+  "comments": [
+    {{
+      "line": 42,
+      "kind": "inline",
+      "text": "read joypad"
+    }},
+    {{
+      "line": 50,
+      "kind": "block",
+      "text": "---- load sprite table"
+    }}
+  ],
   "functions": [
     {{
       "address": "0x08XXXXXX",
@@ -87,14 +101,21 @@ markdown fences. Schema:
 
 ## Rules for this response
 
+- **`comments` format:** each entry references a 1-indexed line in the
+  source above. `kind: "inline"` → the tool appends a tab + `@ <text>`
+  at the end of that line. `kind: "block"` → the tool inserts a new
+  standalone line `@ <text>` **immediately before** that line (use this
+  for the `@ ---- <summary>` style block headers from the system
+  prompt). Do NOT emit the full source back — only these comment
+  entries. Do NOT add comments to lines that already have a
+  Luvdis-generated `@`; skip those.
 - Only include `functions` entries with `confidence: "high"` — these will
   be written to `functions.cfg`. Medium-confidence names stay in
   `variables.md` via `notes`.
-- If the module is pure data (`kind: data`), `annotated_source` may be
-  the original file unchanged, and `functions` will be empty — but still
-  fill `globals` / `constants` where the data clearly represents game
-  state (a level table, string pool, palette, etc.). `category` must be
-  `data` in this case.
+- If the module is pure data (`kind: data`), `comments` may be empty,
+  and `functions` will be empty — but still fill `globals` / `constants`
+  where the data clearly represents game state (a level table, string
+  pool, palette, etc.). `category` must be `data` in this case.
 - Pick `category` from the fixed taxonomy in the system prompt. Base it
   on the memory regions and I/O registers the module actually touches,
   not on guesses about game content.

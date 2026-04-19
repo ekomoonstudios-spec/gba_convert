@@ -57,6 +57,10 @@ DEFAULT_OUTPUT = HERE / "output"
 @click.option("--limit", type=int, default=None,
               help="Process at most N modules in each LLM step. "
                    "Useful for smoke-testing the pipeline cheaply.")
+@click.option("--module", "module", default=None,
+              help="Process only the module with this entry address "
+                   "(matched against addr_start). Accepts 0x08002570, "
+                   "08002570, or 8002570. Applied before --limit.")
 def main(
     rom: Path,
     output: Path,
@@ -70,6 +74,7 @@ def main(
     force: bool,
     include_data: bool,
     limit: int | None,
+    module: str | None,
 ) -> None:
     """Disassemble ROM, split, annotate with Claude, translate to C."""
     output.mkdir(parents=True, exist_ok=True)
@@ -126,6 +131,8 @@ def main(
             click.echo(f"  skipping {n_data} data-only modules "
                        f"(pass --include-data to override)")
         candidates = modules if include_data else [m for m in modules if m.get("kind") != "data"]
+        if module is not None:
+            candidates = _filter_by_module(candidates, module, modules)
         if limit is not None:
             candidates = candidates[:limit]
             click.echo(f"  --limit {limit} → processing first {len(candidates)} of {len(modules)} modules")
@@ -178,6 +185,8 @@ def main(
             click.echo(f"  skipping {n_data} data-only modules "
                        f"(pass --include-data to override)")
         candidates = modules if include_data else [m for m in modules if m.get("kind") != "data"]
+        if module is not None:
+            candidates = _filter_by_module(candidates, module, modules)
         if limit is not None:
             candidates = candidates[:limit]
             click.echo(f"  --limit {limit} → processing first {len(candidates)} of {len(modules)} modules")
@@ -187,6 +196,35 @@ def main(
         click.echo(f"  translated {len(results)} new modules")
         click.echo(f"  c_view:    {translator.c_dir}")
         click.echo(f"  gba.h:     {translator.gba_h_path}")
+
+
+def _filter_by_module(candidates: list, module: str, all_modules: list) -> list:
+    """Filter candidates to the one whose addr_start matches `module`.
+
+    Accepts `0x08002570`, `08002570`, or `8002570` (case-insensitive).
+    Exits 2 if no module matches.
+    """
+    want = module.lower().removeprefix("0x").lstrip("0") or "0"
+    hits = [m for m in candidates
+            if m["addr_start"].lower().removeprefix("0x").lstrip("0") == want]
+    if not hits:
+        in_all = any(m["addr_start"].lower().removeprefix("0x").lstrip("0") == want
+                     for m in all_modules)
+        if in_all:
+            click.secho(
+                f"  --module {module}: matches a data-only module "
+                f"(skipped; pass --include-data to override).",
+                fg="red",
+            )
+        else:
+            click.secho(
+                f"  --module {module}: no module with that addr_start. "
+                f"Check output/modules/_index.json.",
+                fg="red",
+            )
+        sys.exit(2)
+    click.echo(f"  --module {module} → {hits[0]['path']}")
+    return hits
 
 
 def _archive_if_new_rom(rom: Path, output: Path) -> None:

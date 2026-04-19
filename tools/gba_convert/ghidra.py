@@ -47,7 +47,7 @@ from pathlib import Path
 import click
 
 HERE = Path(__file__).resolve().parent
-POSTSCRIPT_PATH = HERE / "ghidra_postscript.py"
+POSTSCRIPT_PATH = HERE / "GbaPostscript.java"
 
 
 @dataclass
