@@ -10,6 +10,7 @@ recompile path in §11b.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -67,15 +68,26 @@ class CTranslator:
         modules: list[dict],
         *,
         force: bool = False,
-        skip_data: bool = True,
+        skip_data: bool = False,
     ) -> list[CViewResult]:
         progress = self._load_progress()
         results: list[CViewResult] = []
 
         for mod in modules:
             idx = mod["index"]
-            if skip_data and mod.get("kind") == "data":
-                progress.setdefault("skipped_data", []).append(idx)
+            if mod.get("kind") == "data":
+                if skip_data:
+                    progress.setdefault("skipped_data", []).append(idx)
+                    continue
+                if not force and idx in progress["completed"]:
+                    continue
+                s_path = self.annotated_dir / mod["path"]
+                if not s_path.is_file():
+                    s_path = (self.output_dir / "modules" / mod["path"])
+                result = self.translate_data_module(mod, s_path)
+                results.append(result)
+                progress["completed"].append(idx)
+                self._save_progress(progress)
                 continue
             if not force and idx in progress["completed"]:
                 continue
@@ -97,7 +109,55 @@ class CTranslator:
 
         return results
 
+    def translate_data_module(self, mod: dict, s_path: Path) -> CViewResult:
+        """Generate a C file for a pure-data module using the .incbin pattern.
+
+        No LLM call is made. The raw bytes are written as a .bin file next to
+        the .c, and the .c embeds them via an inline-asm .incbin directive.
+        This is guaranteed to produce a byte-identical .rodata on compile.
+        """
+        stem = Path(mod["path"]).stem          # e.g. mod_0058_08000000
+        addr = mod.get("addr_start", "unknown")
+
+        raw_bytes = _parse_module_bytes(s_path)
+
+        # Write raw binary alongside the .c so .incbin resolves
+        bin_path = self.c_dir / f"{stem}.bin"
+        bin_path.write_bytes(raw_bytes)
+
+        c_source = (
+            f'/* @source: {mod["path"]} */\n'
+            f'#include "gba.h"\n'
+            f'\n'
+            f'/* Data-only module at {addr} ({len(raw_bytes)} bytes).\n'
+            f' * Raw bytes are embedded verbatim; no LLM translation needed.\n'
+            f' * Compile produces byte-identical .rodata. */\n'
+            f'extern const u8 {stem}_raw[];\n'
+            f'\n'
+            f'__asm__(\n'
+            f'    ".section .rodata\\n"\n'
+            f'    ".balign 4\\n"\n'
+            f'    ".global {stem}_raw\\n"\n'
+            f'    "{stem}_raw:\\n"\n'
+            f'    "    .incbin \\"data/{stem}.bin\\"\\n"\n'
+            f');\n'
+        )
+
+        c_path = self.c_dir / f"{stem}.c"
+        c_path.write_text(c_source)
+
+        return CViewResult(
+            module_index=mod["index"],
+            c_path=c_path,
+            notes=f"data module: {len(raw_bytes)} bytes embedded via .incbin",
+            header_additions=0,
+        )
+
     def translate_one(self, mod: dict, annotated_path: Path, ghidra_hint: str = "") -> CViewResult:
+        # Fast-path: pure data modules don't need LLM translation
+        if mod.get("kind") == "data":
+            return self.translate_data_module(mod, annotated_path)
+
         source = annotated_path.read_text()
         variables_md = self.variables_md_path.read_text()
 
@@ -190,6 +250,66 @@ class CTranslator:
 
     def _save_progress(self, progress: dict) -> None:
         self.progress_path.write_text(json.dumps(progress, indent=2) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Byte parser for data modules (no LLM needed)
+# ---------------------------------------------------------------------------
+
+def _parse_module_bytes(s_path: Path) -> bytes:
+    """Extract raw bytes from .byte / .2byte / .4byte / .space directives."""
+    data = bytearray()
+    for raw in s_path.read_text().splitlines():
+        line = raw.split("@", 1)[0].strip()
+        if not line:
+            continue
+        m = re.match(r"^\s*\.(byte|db)\s+(.*)$", line, re.IGNORECASE)
+        if m:
+            for tok in re.split(r",\s*", m.group(2)):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                if tok.startswith('"') or tok.startswith("'"):
+                    try:
+                        s = ast.literal_eval(tok)
+                        data += s.encode("latin1") if isinstance(s, str) else s
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        data.append(int(tok, 0) & 0xFF)
+                    except Exception:
+                        pass
+            continue
+        m2 = re.match(r"^\s*\.(2byte|hword|short|half)\s+(.*)$", line, re.IGNORECASE)
+        if m2:
+            for tok in re.split(r",\s*", m2.group(2)):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    data += int(tok, 0).to_bytes(2, "little")
+                except Exception:
+                    pass
+            continue
+        m4 = re.match(r"^\s*\.(4byte|word|long|int)\s+(.*)$", line, re.IGNORECASE)
+        if m4:
+            for tok in re.split(r",\s*", m4.group(2)):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    data += int(tok, 0).to_bytes(4, "little")
+                except Exception:
+                    pass
+            continue
+        mspace = re.match(r"^\s*\.(space|skip|zero)\s+(\S+)", line, re.IGNORECASE)
+        if mspace:
+            try:
+                data += b"\x00" * int(mspace.group(2), 0)
+            except Exception:
+                pass
+    return bytes(data)
 
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.DOTALL)
